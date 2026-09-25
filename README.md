@@ -4,7 +4,17 @@ Cursor チームの利用量・追加課金をローカルブラウザで確認�
 
 Python 標準ライブラリのみ。ビルド不要。表示・更新に **追加の Cursor 課金は発生しない**。
 
-![cursor-spend ダッシュボード](docs/screenshot.png)
+![cursor-spend ダッシュボード](docs/screenshot.png?v=2)
+
+## 画面の見方
+
+| 表示 | 意味 |
+| --- | --- |
+| **大きな赤い数字** | 今サイクルで On-demand 課金が付いたイベントの `chargedCents` 合計 |
+| **Cursor 請求画面: $X** | Cursor ダッシュボードの spend メーター（`individualUsed`）。集計方法が違うため、赤い数字と一致しないことがある |
+| **▶ 赤い数字と値が違う理由** | 差の説明（Team プランでは特にズレやすい） |
+
+下段は Cursor Models / Other Models の使用率バー、プラン・チーム・サイクル、モデル別の利用履歴。
 
 ## 必要環境
 
@@ -54,8 +64,6 @@ Cursor がローカル保存したトークンを使う。API キー不要。
 | `POST .../GetFilteredUsageEvents` | 利用イベント（最大 2,000 件） |
 
 ### 集計
-
-見出しの金額は On-demand イベント合計。Cursor 請求画面の値（`individualUsed`）は横に小さく表示。
 
 - サイクル: `billingCycleStart` / `End` でフィルタ
 - Cursor Models: イベントのプールフィールド、なければ `autoBucketModels` / `default`、最後に `grok-` / `composer-` / `cursor-` / `vega`
