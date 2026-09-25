@@ -55,10 +55,15 @@ Cursor がローカル保存したトークンを使う。API キー不要。
 
 ### 集計
 
+見出しの金額は On-demand イベント合計。Cursor 請求画面の値（`individualUsed`）は横に小さく表示。
+
 - サイクル: `billingCycleStart` / `End` でフィルタ
-- Cursor Models: `autoBucketModels`、`default`、`grok-` / `composer-` / `cursor-` / `vega` 接頭辞
+- Cursor Models: イベントのプールフィールド、なければ `autoBucketModels` / `default`、最後に `grok-` / `composer-` / `cursor-` / `vega`
 - Other Models: 上記以外
-- Included / On-demand をモデル別集計
+- 知らない `kind` は合計に入れず `unknownKinds` に残す
+- イベント合計とメーターの差が $0.05 以上なら `drift` を出す
+
+`drift` や未分類が出たら、`fixtures/payload.json` を今のレスポンス形に合わせて直し、`python -m unittest` を通す。
 
 ## 制限
 

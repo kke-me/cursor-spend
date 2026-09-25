@@ -1,0 +1,77 @@
+{
+  "usage": {
+    "billingCycleStart": "1700000000000",
+    "billingCycleEnd": "1702592000000",
+    "autoBucketModels": ["composer-1"],
+    "namedModelSelectedDisplayMessage": "",
+    "planUsage": {
+      "autoPercentUsed": 10,
+      "apiPercentUsed": 80,
+      "includedSpend": 5000,
+      "bonusSpend": 0
+    },
+    "spendLimitUsage": {
+      "individualUsed": 440,
+      "pooledUsed": 21500,
+      "pooledLimit": 144500
+    }
+  },
+  "plan": {
+    "planInfo": {
+      "planName": "Team",
+      "price": "$40/mo",
+      "includedAmountCents": 2000
+    }
+  },
+  "events": [
+    {
+      "timestamp": "1690000000000",
+      "kind": "USAGE_EVENT_KIND_USAGE_BASED",
+      "model": "old-model",
+      "chargedCents": 9999
+    },
+    {
+      "timestamp": "1700000001000",
+      "kind": "USAGE_EVENT_KIND_INCLUDED_IN_BUSINESS",
+      "model": "composer-1",
+      "chargedCents": 100
+    },
+    {
+      "timestamp": "1700000002000",
+      "kind": "USAGE_EVENT_KIND_INCLUDED_IN_BUSINESS",
+      "model": "grok-new",
+      "chargedCents": 50
+    },
+    {
+      "timestamp": "1700000003000",
+      "kind": "USAGE_EVENT_KIND_INCLUDED_IN_BUSINESS",
+      "model": "default",
+      "chargedCents": 25
+    },
+    {
+      "timestamp": "1700000004000",
+      "kind": "USAGE_EVENT_KIND_USAGE_BASED",
+      "model": "kimi",
+      "chargedCents": 1512
+    },
+    {
+      "timestamp": "1700000005000",
+      "kind": "USAGE_EVENT_KIND_USAGE_BASED",
+      "model": "claude",
+      "pool": "auto",
+      "chargedCents": 200
+    },
+    {
+      "timestamp": "1700000006000",
+      "kind": "USAGE_EVENT_KIND_ERRORED",
+      "model": "mystery",
+      "chargedCents": 800
+    },
+    {
+      "timestamp": "1700000007000",
+      "kind": "",
+      "model": "blank",
+      "chargedCents": 10
+    }
+  ]
+}

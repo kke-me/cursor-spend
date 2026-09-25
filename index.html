@@ -5,6 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Cursor spend</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .drift-caret {
+      display: inline-block;
+      width: 0;
+      height: 0;
+      border-top: 0.35em solid transparent;
+      border-bottom: 0.35em solid transparent;
+      border-left: 0.55em solid currentColor;
+      transition: transform 0.15s;
+      vertical-align: -0.05em;
+    }
+    details[open] .drift-caret {
+      transform: rotate(90deg);
+    }
+  </style>
 </head>
 <body class="min-h-screen bg-stone-100 text-stone-900 antialiased">
   <div class="mx-auto max-w-5xl px-4 py-5 pb-12">
@@ -98,15 +113,59 @@
       ]);
     }
 
-    function note(s) {
-      const od = Number(s.spend?.onDemandUsd) || 0;
-      const meter = Number(s.spend?.meterUsd) || 0;
-      if (Math.abs(od - meter) < 0.05) return null;
-      return h("p", { class: "mb-1 max-w-sm text-sm leading-relaxed text-stone-500" }, [
-        "Usage の Cost 合計は " + money(od) + "。",
-        h("br"),
-        "チームの spend メーターは " + money(meter) + "。",
+    function driftNote(s) {
+      if (!s.drift) return null;
+      return h("div", { class: "min-w-0" }, [
+        h("div", { class: "flex flex-col gap-2 items-start" }, [
+          h("p", { class: "text-sm text-stone-600" }, [
+            "Cursor 請求画面: " + money(s.drift.meterUsd),
+          ]),
+          h("details", { class: "min-w-0" }, [
+            h("summary", {
+              class: "cursor-pointer list-none text-xs leading-relaxed text-stone-500 hover:text-stone-700 [&::-webkit-details-marker]:hidden",
+            }, [
+              "※Cursor が請求画面に出している数字です。",
+              h("br"),
+              h("span", { class: "inline-flex items-center gap-1.5 text-stone-400" }, [
+                h("span", { class: "drift-caret" }),
+                h("span", { class: "text-stone-500" }, ["赤い数字と値が違う理由"]),
+              ]),
+            ]),
+            h("div", { class: "mt-2 space-y-2 text-xs leading-relaxed text-stone-500" }, [
+              h("p", {}, ["赤い数字は、追加課金が付いた利用を1回ずつ足した合計です。"]),
+              h("p", {}, [
+                "Cursor 請求画面の数字は、別の API フィールドから来ています。同じ追加課金でも、集計方法が違います。",
+              ]),
+              h("p", {}, [
+                "Team プランでは、1回の利用コストがそのまま請求画面に載るとは限りません。計算式は Cursor が公開していません。",
+              ]),
+            ]),
+          ]),
+        ]),
       ]);
+    }
+
+    function sideNotes(s) {
+      const nodes = [];
+      const drift = driftNote(s);
+      if (drift) nodes.push(drift);
+      const unknown = s.unknownKinds || [];
+      if (unknown.length) {
+        const text = unknown.map((u) => u.kind + " × " + u.count).join("、");
+        nodes.push(h("p", { class: "text-sm text-amber-800" }, ["未分類: " + text]));
+      }
+      if (!nodes.length) return null;
+      if (nodes.length === 1) return nodes[0];
+      return h("div", { class: "flex min-w-0 flex-col gap-2" }, nodes);
+    }
+
+    function amountRow(s) {
+      const hero = h("p", { class: "shrink-0 text-5xl font-bold tabular-nums leading-none " + heroTone(s) }, [
+        money(s.spend?.onDemandUsd),
+      ]);
+      const side = sideNotes(s);
+      if (!side) return hero;
+      return h("div", { class: "flex items-start gap-4 max-md:flex-col" }, [hero, side]);
     }
 
     function poolBar(label, kind, pct) {
@@ -129,12 +188,7 @@
       const team = s.team ? money(s.team.onDemandUsd) + " / " + money(s.team.limitUsd) : "";
       return h("section", { class: "flex flex-col gap-5" }, [
         h("p", { class: "font-semibold" }, ["今サイクルの追加課金"]),
-        h("div", { class: "flex flex-wrap items-end gap-5" }, [
-          h("p", { class: "shrink-0 text-5xl font-bold tabular-nums " + heroTone(s) }, [
-            money(s.spend?.onDemandUsd),
-          ]),
-          note(s),
-        ]),
+        amountRow(s),
         h("div", { class: "flex flex-col gap-4" }, [
           poolBar("Cursor Models", "cursor", s.pools?.cursor?.percentUsed ?? 0),
           poolBar("Other Models", "other", s.pools?.other?.percentUsed ?? 0),

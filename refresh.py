@@ -23,8 +23,14 @@ USAGE = f"{DASH}/GetCurrentPeriodUsage"
 PLAN = f"{DASH}/GetPlanInfo"
 EVENTS = f"{DASH}/GetFilteredUsageEvents"
 
+LOGIC_VERSION = 1
+DRIFT_USD = 0.05
 KIND_ON_DEMAND = "USAGE_EVENT_KIND_USAGE_BASED"
 KIND_INCLUDED = "USAGE_EVENT_KIND_INCLUDED_IN_BUSINESS"
+KNOWN_KINDS = {KIND_ON_DEMAND, KIND_INCLUDED}
+CURSOR_PREFIXES = ("grok-", "composer-", "cursor-", "vega")
+# Present on an event, these win over autoBucketModels and prefixes.
+POOL_FIELDS = ("pool", "modelPool", "billingBucket", "modelBucket")
 MAX_PAGES = 20
 
 
@@ -41,6 +47,10 @@ def empty_snapshot(error: str | None = None) -> dict[str, Any]:
         "onDemand": [],
         "uses": [],
         "models": [],
+        "logicVersion": LOGIC_VERSION,
+        "drift": None,
+        "unknownKinds": [],
+        "prefixFallback": [],
     }
 
 
@@ -144,19 +154,154 @@ def write_snapshot(snap: dict[str, Any]) -> None:
     SNAPSHOT_PATH.write_text(text, encoding="utf-8")
 
 
-def build_snapshot(token: str) -> dict[str, Any]:
-    profile = api_json("GET", AUTH_PROFILE, token)
-    team_id = profile.get("teamId")
-    if team_id is None:
-        raise RuntimeError("teamId missing from full_stripe_profile")
-    team_id = int(team_id)
+def classify_pool(name: str, event: dict[str, Any], auto_bucket: set[str]) -> tuple[str, str]:
+    for key in POOL_FIELDS:
+        raw = event.get(key)
+        if raw in (None, ""):
+            continue
+        text = str(raw).lower()
+        if text in ("cursor", "auto", "first_party", "first-party"):
+            return "cursor", "api"
+        if text in ("other", "api", "third_party", "third-party"):
+            return "other", "api"
+    if name in auto_bucket or name == "default":
+        return "cursor", "bucket"
+    if name.startswith(CURSOR_PREFIXES):
+        return "cursor", "prefix"
+    return "other", "other"
 
-    usage = api_json("POST", USAGE, token, {})
-    plan_info = api_json("POST", PLAN, token, {})
+
+def aggregate(
+    usage: dict[str, Any],
+    plan_info: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
     plan_usage = usage.get("planUsage") or {}
     spend_limit = usage.get("spendLimitUsage") or {}
     plan_block = plan_info.get("planInfo") or plan_info
 
+    start_ms = usage.get("billingCycleStart")
+    end_ms = usage.get("billingCycleEnd")
+    start_i = int(start_ms) if start_ms not in (None, "") else None
+    end_i = int(end_ms) if end_ms not in (None, "") else None
+    auto_bucket = set(usage.get("autoBucketModels") or [])
+
+    on_demand: list[dict[str, Any]] = []
+    uses: list[dict[str, Any]] = []
+    models: dict[str, dict[str, Any]] = {}
+    unknown: dict[str, int] = {}
+    prefix_fallback: set[str] = set()
+
+    def ensure_model(name: str, pool: str) -> dict[str, Any]:
+        if name not in models:
+            models[name] = {
+                "model": name,
+                "pool": pool,
+                "includedUsd": 0.0,
+                "onDemandUsd": 0.0,
+                "calls": 0,
+            }
+        return models[name]
+
+    for ev in events:
+        ts = ev.get("timestamp")
+        if ts is None:
+            continue
+        ts_i = int(ts)
+        if start_i is not None and ts_i < start_i:
+            continue
+        if end_i is not None and ts_i >= end_i:
+            continue
+
+        kind = str(ev.get("kind") or "")
+        if kind not in KNOWN_KINDS:
+            unknown[kind or "(empty)"] = unknown.get(kind or "(empty)", 0) + 1
+            continue
+
+        model = str(ev.get("model") or "unknown")
+        pool, source = classify_pool(model, ev, auto_bucket)
+        if source == "prefix":
+            prefix_fallback.add(model)
+        row = ensure_model(model, pool)
+        row["calls"] += 1
+        usd = round(cents(ev.get("chargedCents") or 0), 4)
+        on_demand_kind = kind == KIND_ON_DEMAND
+        if on_demand_kind:
+            row["onDemandUsd"] += usd
+            on_demand.append({"at": ms_to_iso(ts_i), "model": model, "usd": usd})
+        else:
+            row["includedUsd"] += usd
+        uses.append(
+            {
+                "at": ms_to_iso(ts_i),
+                "model": model,
+                "pool": pool,
+                "usd": usd,
+                "onDemand": on_demand_kind,
+            }
+        )
+
+    on_demand.sort(key=lambda x: x["at"] or "", reverse=True)
+    uses.sort(key=lambda x: x["at"] or "", reverse=True)
+    model_list = sorted(
+        models.values(),
+        key=lambda x: x["includedUsd"] + x["onDemandUsd"],
+        reverse=True,
+    )
+    for row in model_list:
+        row["includedUsd"] = round(row["includedUsd"], 4)
+        row["onDemandUsd"] = round(row["onDemandUsd"], 4)
+
+    event_usd = round(sum(x["usd"] for x in on_demand), 4)
+    meter_usd = round(cents(spend_limit.get("individualUsed") or 0), 4)
+    delta = round(event_usd - meter_usd, 4)
+    drift = None
+    if abs(delta) >= DRIFT_USD:
+        drift = {"eventUsd": event_usd, "meterUsd": meter_usd, "deltaUsd": delta}
+
+    status = (
+        usage.get("namedModelSelectedDisplayMessage")
+        or usage.get("displayMessage")
+        or ""
+    )
+    return {
+        "fetchedAt": None,
+        "error": None,
+        "logicVersion": LOGIC_VERSION,
+        "cycle": {"start": ms_to_iso(start_i), "end": ms_to_iso(end_i)},
+        "plan": {
+            "name": str(plan_block.get("planName") or ""),
+            "seatUsd": parse_seat_usd(plan_block.get("price")),
+            "includedApiUsd": cents(plan_block.get("includedAmountCents") or 0),
+        },
+        "pools": {
+            "cursor": {"percentUsed": float(plan_usage.get("autoPercentUsed") or 0)},
+            "other": {"percentUsed": float(plan_usage.get("apiPercentUsed") or 0)},
+        },
+        "spend": {
+            "includedUsd": cents(plan_usage.get("includedSpend") or 0),
+            "bonusUsd": cents(plan_usage.get("bonusSpend") or 0),
+            "onDemandUsd": event_usd,
+            "meterUsd": meter_usd,
+        },
+        "team": {
+            "onDemandUsd": cents(spend_limit.get("pooledUsed") or 0),
+            "limitUsd": cents(spend_limit.get("pooledLimit") or 0),
+        },
+        "status": str(status),
+        "drift": drift,
+        "unknownKinds": [
+            {"kind": kind, "count": count}
+            for kind, count in sorted(unknown.items())
+        ],
+        "prefixFallback": sorted(prefix_fallback),
+        "onDemand": on_demand,
+        "uses": uses,
+        "models": model_list,
+    }
+
+
+def fetch_events(token: str, team_id: int) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for page in range(1, MAX_PAGES + 1):
         payload = api_json(
@@ -171,126 +316,20 @@ def build_snapshot(token: str) -> dict[str, Any]:
         events.extend(batch)
         if len(batch) < 100:
             break
+    return events
 
-    start_ms = usage.get("billingCycleStart")
-    end_ms = usage.get("billingCycleEnd")
-    start_i = int(start_ms) if start_ms not in (None, "") else None
-    end_i = int(end_ms) if end_ms not in (None, "") else None
 
-    auto_bucket = set(usage.get("autoBucketModels") or [])
-    # autoBucketModels lags new first-party ids (grok-4.7 was missing on 2026-09-25).
-    cursor_prefixes = ("grok-", "composer-", "cursor-", "vega")
+def build_snapshot(token: str) -> dict[str, Any]:
+    profile = api_json("GET", AUTH_PROFILE, token)
+    team_id = profile.get("teamId")
+    if team_id is None:
+        raise RuntimeError("teamId missing from full_stripe_profile")
 
-    def pool_of(name: str) -> str:
-        if name in auto_bucket or name == "default":
-            return "cursor"
-        if name.startswith(cursor_prefixes):
-            return "cursor"
-        return "other"
-
-    on_demand: list[dict[str, Any]] = []
-    uses: list[dict[str, Any]] = []
-    models: dict[str, dict[str, Any]] = {}
-
-    def ensure_model(name: str) -> dict[str, Any]:
-        if name not in models:
-            models[name] = {
-                "model": name,
-                "pool": pool_of(name),
-                "includedUsd": 0.0,
-                "onDemandUsd": 0.0,
-                "calls": 0,
-            }
-        return models[name]
-
-    for ev in events:
-        kind = ev.get("kind") or ""
-        # Aborted / errored kinds are not included or usage-based
-        if kind not in (KIND_ON_DEMAND, KIND_INCLUDED):
-            continue
-
-        ts = ev.get("timestamp")
-        if ts is None:
-            continue
-        ts_i = int(ts)
-        if start_i is not None and ts_i < start_i:
-            continue
-        if end_i is not None and ts_i >= end_i:
-            continue
-
-        model = str(ev.get("model") or "unknown")
-        m = ensure_model(model)
-        m["calls"] += 1
-        usd = round(cents(ev.get("chargedCents") or 0), 4)
-        on_demand_kind = kind == KIND_ON_DEMAND
-
-        if on_demand_kind:
-            m["onDemandUsd"] += usd
-            on_demand.append(
-                {"at": ms_to_iso(ts_i), "model": model, "usd": usd}
-            )
-        else:
-            m["includedUsd"] += usd
-
-        uses.append(
-            {
-                "at": ms_to_iso(ts_i),
-                "model": model,
-                "pool": m["pool"],
-                "usd": usd,
-                "onDemand": on_demand_kind,
-            }
-        )
-
-    on_demand.sort(key=lambda x: x["at"] or "", reverse=True)
-    uses.sort(key=lambda x: x["at"] or "", reverse=True)
-    model_list = sorted(
-        models.values(),
-        key=lambda x: x["includedUsd"] + x["onDemandUsd"],
-        reverse=True,
-    )
-    for m in model_list:
-        m["includedUsd"] = round(m["includedUsd"], 4)
-        m["onDemandUsd"] = round(m["onDemandUsd"], 4)
-
-    on_demand_usd = round(sum(x["usd"] for x in on_demand), 4)
-    status = (
-        usage.get("namedModelSelectedDisplayMessage")
-        or usage.get("displayMessage")
-        or ""
-    )
-
-    return {
-        "fetchedAt": datetime.now(timezone.utc).isoformat(),
-        "error": None,
-        "cycle": {
-            "start": ms_to_iso(start_i),
-            "end": ms_to_iso(end_i),
-        },
-        "plan": {
-            "name": str(plan_block.get("planName") or ""),
-            "seatUsd": parse_seat_usd(plan_block.get("price")),
-            "includedApiUsd": cents(plan_block.get("includedAmountCents") or 0),
-        },
-        "pools": {
-            "cursor": {"percentUsed": float(plan_usage.get("autoPercentUsed") or 0)},
-            "other": {"percentUsed": float(plan_usage.get("apiPercentUsed") or 0)},
-        },
-        "spend": {
-            "includedUsd": cents(plan_usage.get("includedSpend") or 0),
-            "bonusUsd": cents(plan_usage.get("bonusSpend") or 0),
-            "onDemandUsd": on_demand_usd,
-            "meterUsd": cents(spend_limit.get("individualUsed") or 0),
-        },
-        "team": {
-            "onDemandUsd": cents(spend_limit.get("pooledUsed") or 0),
-            "limitUsd": cents(spend_limit.get("pooledLimit") or 0),
-        },
-        "status": str(status),
-        "onDemand": on_demand,
-        "uses": uses,
-        "models": model_list,
-    }
+    usage = api_json("POST", USAGE, token, {})
+    plan_info = api_json("POST", PLAN, token, {})
+    snap = aggregate(usage, plan_info, fetch_events(token, int(team_id)))
+    snap["fetchedAt"] = datetime.now(timezone.utc).isoformat()
+    return snap
 
 
 def refresh() -> dict[str, Any]:
