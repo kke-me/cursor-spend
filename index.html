@@ -292,13 +292,18 @@
       for (const fn of [sectionMeter, sectionUses]) root.append(fn(s));
     }
 
+    const AUTO_REFRESH_MS = 5 * 60 * 1000;
+
     function setupRefresh() {
       const btn = $("#refresh-btn");
       if (location.protocol !== "http:" && location.protocol !== "https:") {
         btn.textContent = "python3 refresh.py を実行";
         return;
       }
-      btn.addEventListener("click", async () => {
+      let inflight = false;
+      async function pull() {
+        if (inflight) return;
+        inflight = true;
         btn.disabled = true;
         try {
           const data = await (await fetch("/refresh")).json();
@@ -307,9 +312,14 @@
         } catch (e) {
           render({ error: String(e) });
         } finally {
+          inflight = false;
           btn.disabled = false;
         }
-      });
+      }
+      btn.addEventListener("click", pull);
+      setInterval(() => {
+        if (document.visibilityState === "visible") pull();
+      }, AUTO_REFRESH_MS);
     }
 
     setupRefresh();
