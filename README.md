@@ -4,7 +4,7 @@ Cursor チームの利用量・追加課金をローカルブラウザで確認�
 
 Python 標準ライブラリのみ。ビルド不要。表示・更新に **追加の Cursor 課金は発生しない**。
 
-![cursor-spend ダッシュボード](docs/screenshot.png?v=2)
+![cursor-spend ダッシュボード](docs/dashboard.png)
 
 ## 画面の見方
 
