@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -15,10 +16,6 @@ from typing import Any
 
 DIR = Path(__file__).resolve().parent
 SNAPSHOT_PATH = DIR / "snapshot.js"
-VSCDB = (
-    Path.home()
-    / "Library/Application Support/Cursor/User/globalStorage/state.vscdb"
-)
 BASE = "https://api2.cursor.sh"
 AUTH_PROFILE = f"{BASE}/auth/full_stripe_profile"
 DASH = f"{BASE}/aiserver.v1.DashboardService"
@@ -47,8 +44,42 @@ def empty_snapshot(error: str | None = None) -> dict[str, Any]:
     }
 
 
+def vscdb_candidates() -> list[Path]:
+    home = Path.home()
+    if override := os.environ.get("CURSOR_VSCDB"):
+        return [Path(override)]
+    if sys.platform == "darwin":
+        return [
+            home / "Library/Application Support/Cursor/User/globalStorage/state.vscdb",
+            home
+            / "Library/Application Support/Cursor - Insiders/User/globalStorage/state.vscdb",
+        ]
+    if sys.platform == "win32":
+        appdata = Path(os.environ.get("APPDATA", home / "AppData/Roaming"))
+        local = Path(os.environ.get("LOCALAPPDATA", home / "AppData/Local"))
+        return [
+            appdata / "Cursor/User/globalStorage/state.vscdb",
+            appdata / "Cursor - Insiders/User/globalStorage/state.vscdb",
+            local / "Cursor/User/globalStorage/state.vscdb",
+        ]
+    return [
+        home / ".config/Cursor/User/globalStorage/state.vscdb",
+        home / ".config/cursor/User/globalStorage/state.vscdb",
+    ]
+
+
+def find_vscdb() -> Path:
+    for path in vscdb_candidates():
+        if path.is_file():
+            return path
+    tried = "\n".join(f"  - {p}" for p in vscdb_candidates())
+    raise RuntimeError(f"state.vscdb not found. Tried:\n{tried}")
+
+
 def read_token() -> str:
-    conn = sqlite3.connect(f"file:{VSCDB}?mode=ro", uri=True)
+    vscdb = find_vscdb()
+    uri = f"file:{vscdb.as_posix()}?mode=ro&immutable=1"
+    conn = sqlite3.connect(uri, uri=True)
     try:
         row = conn.execute(
             "SELECT value FROM ItemTable WHERE key = ?",
@@ -57,7 +88,7 @@ def read_token() -> str:
     finally:
         conn.close()
     if not row or not row[0]:
-        raise RuntimeError("cursorAuth/accessToken missing in state.vscdb")
+        raise RuntimeError(f"cursorAuth/accessToken missing in {vscdb}")
     return str(row[0])
 
 
