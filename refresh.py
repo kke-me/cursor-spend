@@ -28,9 +28,15 @@ DRIFT_USD = 0.05
 KIND_ON_DEMAND = "USAGE_EVENT_KIND_USAGE_BASED"
 KIND_INCLUDED = "USAGE_EVENT_KIND_INCLUDED_IN_BUSINESS"
 KNOWN_KINDS = {KIND_ON_DEMAND, KIND_INCLUDED}
+# Billed nowhere. Keep them out of totals and out of unknownKinds.
+UNBILLED_KINDS = {
+    "USAGE_EVENT_KIND_ERRORED_NOT_CHARGED",
+    "USAGE_EVENT_KIND_ABORTED_NOT_CHARGED",
+}
 CURSOR_PREFIXES = ("grok-", "composer-", "cursor-", "vega")
 # Present on an event, these win over autoBucketModels and prefixes.
 POOL_FIELDS = ("pool", "modelPool", "billingBucket", "modelBucket")
+PAGE_SIZE = 1000
 MAX_PAGES = 20
 
 
@@ -51,6 +57,7 @@ def empty_snapshot(error: str | None = None) -> dict[str, Any]:
         "drift": None,
         "unknownKinds": [],
         "prefixFallback": [],
+        "truncated": False,
     }
 
 
@@ -154,6 +161,18 @@ def write_snapshot(snap: dict[str, Any]) -> None:
     SNAPSHOT_PATH.write_text(text, encoding="utf-8")
 
 
+def model_slug(name: str) -> str:
+    """Turn a dashboard display name into the slug autoBucketModels uses.
+
+    "Grok 4.6 (Auto Balanced)" and "grok-4.7-high (Auto Balanced)" both need
+    to match first-party prefixes. Third-party titles stay third-party.
+    """
+    text = re.sub(r"\s*\([^)]*\)\s*$", "", name.strip())
+    text = text.lower().replace(" ", "-")
+    text = re.sub(r"-{2,}", "-", text).strip("-")
+    return text
+
+
 def classify_pool(name: str, event: dict[str, Any], auto_bucket: set[str]) -> tuple[str, str]:
     for key in POOL_FIELDS:
         raw = event.get(key)
@@ -164,11 +183,21 @@ def classify_pool(name: str, event: dict[str, Any], auto_bucket: set[str]) -> tu
             return "cursor", "api"
         if text in ("other", "api", "third_party", "third-party"):
             return "other", "api"
-    if name in auto_bucket or name == "default":
+    slug = model_slug(name)
+    if name in auto_bucket or slug in auto_bucket or name == "default" or slug == "default":
         return "cursor", "bucket"
-    if name.startswith(CURSOR_PREFIXES):
+    if slug.startswith(CURSOR_PREFIXES):
         return "cursor", "prefix"
     return "other", "other"
+
+
+def optional_cents(container: dict[str, Any], key: str) -> float | None:
+    if key not in container:
+        return None
+    raw = container.get(key)
+    if raw in (None, ""):
+        return None
+    return round(cents(raw), 4)
 
 
 def aggregate(
@@ -214,6 +243,8 @@ def aggregate(
             continue
 
         kind = str(ev.get("kind") or "")
+        if kind in UNBILLED_KINDS:
+            continue
         if kind not in KNOWN_KINDS:
             unknown[kind or "(empty)"] = unknown.get(kind or "(empty)", 0) + 1
             continue
@@ -253,11 +284,17 @@ def aggregate(
         row["onDemandUsd"] = round(row["onDemandUsd"], 4)
 
     event_usd = round(sum(x["usd"] for x in on_demand), 4)
-    meter_usd = round(cents(spend_limit.get("individualUsed") or 0), 4)
-    delta = round(event_usd - meter_usd, 4)
+    # individualUsed was removed from spendLimitUsage. Missing is not $0.
+    meter_usd = optional_cents(spend_limit, "individualUsed")
     drift = None
-    if abs(delta) >= DRIFT_USD:
-        drift = {"eventUsd": event_usd, "meterUsd": meter_usd, "deltaUsd": delta}
+    if meter_usd is not None:
+        delta = round(event_usd - meter_usd, 4)
+        if abs(delta) >= DRIFT_USD:
+            drift = {"eventUsd": event_usd, "meterUsd": meter_usd, "deltaUsd": delta}
+
+    included_raw = plan_block.get("includedAmountCents")
+    if included_raw in (None, ""):
+        included_raw = plan_usage.get("limit") or 0
 
     status = (
         usage.get("namedModelSelectedDisplayMessage")
@@ -272,7 +309,7 @@ def aggregate(
         "plan": {
             "name": str(plan_block.get("planName") or ""),
             "seatUsd": parse_seat_usd(plan_block.get("price")),
-            "includedApiUsd": cents(plan_block.get("includedAmountCents") or 0),
+            "includedApiUsd": cents(included_raw),
         },
         "pools": {
             "cursor": {"percentUsed": float(plan_usage.get("autoPercentUsed") or 0)},
@@ -298,25 +335,52 @@ def aggregate(
         "onDemand": on_demand,
         "uses": uses,
         "models": model_list,
+        "truncated": False,
     }
 
 
-def fetch_events(token: str, team_id: int) -> list[dict[str, Any]]:
+def fetch_events(
+    token: str,
+    team_id: int,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
     events: list[dict[str, Any]] = []
+    reported_total: int | None = None
+    exhausted = True
     for page in range(1, MAX_PAGES + 1):
-        payload = api_json(
-            "POST",
-            EVENTS,
-            token,
-            {"teamId": team_id, "pageSize": 100, "page": page},
-        )
+        body: dict[str, Any] = {"teamId": team_id, "pageSize": PAGE_SIZE, "page": page}
+        if start_ms is not None:
+            body["startDate"] = start_ms
+        if end_ms is not None:
+            body["endDate"] = end_ms
+        payload = api_json("POST", EVENTS, token, body)
+        if reported_total is None:
+            raw_total = payload.get("totalUsageEventsCount")
+            if raw_total not in (None, ""):
+                reported_total = int(raw_total)
         batch = payload.get("usageEventsDisplay") or []
         if not isinstance(batch, list):
             batch = []
         events.extend(batch)
-        if len(batch) < 100:
+        if len(batch) < PAGE_SIZE:
+            exhausted = False
             break
-    return events
+    if reported_total is not None:
+        truncated = len(events) < reported_total
+    else:
+        truncated = exhausted
+    return events, truncated
+
+
+def cycle_bounds(usage: dict[str, Any]) -> tuple[int | None, int | None]:
+    def one(key: str) -> int | None:
+        raw = usage.get(key)
+        if raw in (None, ""):
+            return None
+        return int(raw)
+
+    return one("billingCycleStart"), one("billingCycleEnd")
 
 
 def build_snapshot(token: str) -> dict[str, Any]:
@@ -327,7 +391,10 @@ def build_snapshot(token: str) -> dict[str, Any]:
 
     usage = api_json("POST", USAGE, token, {})
     plan_info = api_json("POST", PLAN, token, {})
-    snap = aggregate(usage, plan_info, fetch_events(token, int(team_id)))
+    start_ms, end_ms = cycle_bounds(usage)
+    events, truncated = fetch_events(token, int(team_id), start_ms, end_ms)
+    snap = aggregate(usage, plan_info, events)
+    snap["truncated"] = truncated
     snap["fetchedAt"] = datetime.now(timezone.utc).isoformat()
     return snap
 
