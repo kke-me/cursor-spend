@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import functools
 import hashlib
 import json
@@ -91,23 +92,63 @@ def find_vscdb() -> Path:
 ENCRYPTED_PREFIX = "cursor-safe-storage:v1:"
 
 
+def _keychain_generic_password(service: str) -> bytes:
+    """Read a generic password through Security.framework, so this process is the Keychain client.
+
+    The `security` CLI would be the client instead, and "Always Allow" would then
+    apply to every script that calls it.
+    """
+    sec = ctypes.CDLL("/System/Library/Frameworks/Security.framework/Security")
+    cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    vp = ctypes.c_void_p
+    cf.CFStringCreateWithCString.restype = vp
+    cf.CFStringCreateWithCString.argtypes = [vp, ctypes.c_char_p, ctypes.c_uint32]
+    cf.CFDictionaryCreateMutable.restype = vp
+    cf.CFDictionaryCreateMutable.argtypes = [vp, ctypes.c_long, vp, vp]
+    cf.CFDictionarySetValue.argtypes = [vp, vp, vp]
+    cf.CFDataGetLength.restype = ctypes.c_long
+    cf.CFDataGetLength.argtypes = [vp]
+    cf.CFDataGetBytePtr.restype = ctypes.c_void_p
+    cf.CFDataGetBytePtr.argtypes = [vp]
+    cf.CFRelease.argtypes = [vp]
+    sec.SecItemCopyMatching.restype = ctypes.c_int32
+    sec.SecItemCopyMatching.argtypes = [vp, ctypes.POINTER(vp)]
+
+    utf8 = 0x08000100
+    def cfstr(text: str) -> int:
+        return cf.CFStringCreateWithCString(None, text.encode(), utf8)
+
+    query = cf.CFDictionaryCreateMutable(None, 0, ctypes.addressof(vp.in_dll(cf, "kCFTypeDictionaryKeyCallBacks")), ctypes.addressof(vp.in_dll(cf, "kCFTypeDictionaryValueCallBacks")))
+    for key, value in (
+        (vp.in_dll(sec, "kSecClass").value, vp.in_dll(sec, "kSecClassGenericPassword").value),
+        (vp.in_dll(sec, "kSecAttrService").value, cfstr(service)),
+        (vp.in_dll(sec, "kSecReturnData").value, vp.in_dll(cf, "kCFBooleanTrue").value),
+        (vp.in_dll(sec, "kSecMatchLimit").value, vp.in_dll(sec, "kSecMatchLimitOne").value),
+    ):
+        cf.CFDictionarySetValue(query, key, value)
+
+    result = vp()
+    status = sec.SecItemCopyMatching(query, ctypes.byref(result))
+    cf.CFRelease(query)
+    if status != 0:
+        raise RuntimeError(
+            f"Keychain item {service!r} not readable (OSStatus {status}). "
+            "Allow access in the macOS dialog."
+        )
+    length = cf.CFDataGetLength(result)
+    ptr = cf.CFDataGetBytePtr(result)
+    data = ctypes.string_at(ptr, length)
+    cf.CFRelease(result)
+    return data
+
+
 @functools.cache
-def keychain_password() -> str:
+def keychain_password(service: str = "Cursor Safe Storage") -> str:
     if sys.platform != "darwin":
         raise RuntimeError(
             "Cursor stores the token encrypted; decryption is only implemented for macOS."
         )
-    proc = subprocess.run(
-        ["security", "find-generic-password", "-w", "-s", "Cursor Safe Storage"],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            "Could not read 'Cursor Safe Storage' from Keychain "
-            f"(allow access in the dialog): {proc.stderr.strip()}"
-        )
-    return proc.stdout.strip()
+    return _keychain_generic_password(service).decode("utf-8")
 
 
 def decrypt_safe_storage(value: str, password: str) -> str:

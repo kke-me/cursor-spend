@@ -35,31 +35,40 @@ class DecryptTest(unittest.TestCase):
 
 
 class KeychainTest(unittest.TestCase):
+    """The real Keychain is never touched here; a prompt would block the test run."""
+
     def setUp(self):
         refresh.keychain_password.cache_clear()
         self.addCleanup(refresh.keychain_password.cache_clear)
+        self.reads = []
+        self.answers = []
+
+        def fake_read(service):
+            self.reads.append(service)
+            answer = self.answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        for patcher in (
+            mock.patch.object(refresh, "_keychain_generic_password", fake_read),
+            mock.patch.object(refresh.sys, "platform", "darwin"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_keychain_is_read_once_per_process(self):
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd[0])
-            return subprocess.CompletedProcess(cmd, 0, stdout="pw\n", stderr="")
-
-        with mock.patch.object(refresh.subprocess, "run", fake_run), mock.patch.object(refresh.sys, "platform", "darwin"):
-            self.assertEqual(refresh.keychain_password(), "pw")
-            self.assertEqual(refresh.keychain_password(), "pw")
-        self.assertEqual(calls, ["security"])
+        self.answers = [b"pw"]
+        self.assertEqual(refresh.keychain_password(), "pw")
+        self.assertEqual(refresh.keychain_password(), "pw")
+        self.assertEqual(self.reads, ["Cursor Safe Storage"])
 
     def test_denied_keychain_is_retried_next_time(self):
-        results = iter([
-            subprocess.CompletedProcess([], 1, stdout="", stderr="denied"),
-            subprocess.CompletedProcess([], 0, stdout="pw\n", stderr=""),
-        ])
-        with mock.patch.object(refresh.subprocess, "run", lambda cmd, **kw: next(results)), mock.patch.object(refresh.sys, "platform", "darwin"):
-            with self.assertRaisesRegex(RuntimeError, "denied"):
-                refresh.keychain_password()
-            self.assertEqual(refresh.keychain_password(), "pw")
+        self.answers = [RuntimeError("denied"), b"pw"]
+        with self.assertRaisesRegex(RuntimeError, "denied"):
+            refresh.keychain_password()
+        self.assertEqual(refresh.keychain_password(), "pw")
+        self.assertEqual(len(self.reads), 2)
 
 
 if __name__ == "__main__":

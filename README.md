@@ -54,7 +54,9 @@ Cursor がローカル保存したトークンを使う。API キー不要。
 
 `CURSOR_VSCDB` 環境変数でパス上書き可。トークンと `snapshot.js` は共有しない（`.gitignore` 済み）。
 
-Cursor 3.x 以降、macOS ではトークンが `cursor-safe-storage:v1:` 付きで暗号化保存される。復号の鍵は Keychain の「Cursor Safe Storage」から取るため、起動時に macOS の許可ダイアログが出る。`--serve` 中は鍵をメモリに保持するので、自動更新のたびには聞かれない。「常に許可」を選べば起動時にも聞かれない。
+Cursor 3.x 以降、macOS ではトークンが `cursor-safe-storage:v1:` 付きで暗号化保存される。復号の鍵は Keychain の「Cursor Safe Storage」から取るため、起動時に macOS の許可ダイアログが出る。鍵は `refresh.py` 自身が Security.framework 経由で読む（`security` コマンドは使わない）。`--serve` 中は鍵をメモリに保持するので、自動更新のたびには聞かれない。
+
+**「常に許可」は選ばない。** 許可は、読み取りを要求したプログラムに付く。`python3` に常に許可を与えると、同じインタープリタで動く他のスクリプトも鍵を読めるようになる。「今回のみ許可」なら、起動ごとに確認が出る。
 
 ### API
 
