@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timezone
@@ -86,10 +89,51 @@ def find_vscdb() -> Path:
     raise RuntimeError(f"state.vscdb not found. Tried:\n{tried}")
 
 
+ENCRYPTED_PREFIX = "cursor-safe-storage:v1:"
+
+
+def keychain_password() -> str:
+    if sys.platform != "darwin":
+        raise RuntimeError(
+            "Cursor stores the token encrypted; decryption is only implemented for macOS."
+        )
+    proc = subprocess.run(
+        ["security", "find-generic-password", "-w", "-s", "Cursor Safe Storage"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "Could not read 'Cursor Safe Storage' from Keychain "
+            f"(allow access in the dialog): {proc.stderr.strip()}"
+        )
+    return proc.stdout.strip()
+
+
+def decrypt_safe_storage(value: str, password: str) -> str:
+    """Electron safeStorage on macOS: base64("v10" + AES-128-CBC).
+
+    Key is PBKDF2-SHA1(password, "saltysalt", 1003, 16), IV is 16 spaces.
+    AES is not in the stdlib, so this uses the system openssl.
+    """
+    blob = base64.b64decode(value[len(ENCRYPTED_PREFIX) :])
+    if not blob.startswith(b"v10"):
+        raise RuntimeError(f"unsupported safeStorage blob header: {blob[:3]!r}")
+    key = hashlib.pbkdf2_hmac("sha1", password.encode(), b"saltysalt", 1003, 16)
+    proc = subprocess.run(
+        ["openssl", "enc", "-d", "-aes-128-cbc", "-K", key.hex(), "-iv", (b" " * 16).hex()],
+        input=blob[3:],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError("openssl failed to decrypt the Cursor token")
+    return proc.stdout.decode("utf-8")
+
+
 def read_token() -> str:
     vscdb = find_vscdb()
-    uri = f"file:{vscdb.as_posix()}?mode=ro&immutable=1"
-    conn = sqlite3.connect(uri, uri=True)
+    # immutable=1 would skip the WAL, where Cursor writes refreshed tokens.
+    conn = sqlite3.connect(f"file:{vscdb.as_posix()}?mode=ro", uri=True)
     try:
         row = conn.execute(
             "SELECT value FROM ItemTable WHERE key = ?",
@@ -99,7 +143,10 @@ def read_token() -> str:
         conn.close()
     if not row or not row[0]:
         raise RuntimeError(f"cursorAuth/accessToken missing in {vscdb}")
-    return str(row[0])
+    token = str(row[0])
+    if token.startswith(ENCRYPTED_PREFIX):
+        token = decrypt_safe_storage(token, keychain_password())
+    return token
 
 
 def api_json(

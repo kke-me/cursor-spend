@@ -54,6 +54,8 @@ Cursor がローカル保存したトークンを使う。API キー不要。
 
 `CURSOR_VSCDB` 環境変数でパス上書き可。トークンと `snapshot.js` は共有しない（`.gitignore` 済み）。
 
+Cursor 3.x 以降、macOS ではトークンが `cursor-safe-storage:v1:` 付きで暗号化保存される。復号の鍵は Keychain の「Cursor Safe Storage」から取るため、初回は macOS の許可ダイアログが出る。「常に許可」を選べば次回から聞かれない。
+
 ### API
 
 `https://api2.cursor.sh` — Cursor ダッシュボードと同系統の **非公開 API**。
