@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import json
 import os
@@ -90,6 +91,7 @@ def find_vscdb() -> Path:
 ENCRYPTED_PREFIX = "cursor-safe-storage:v1:"
 
 
+@functools.cache
 def keychain_password() -> str:
     if sys.platform != "darwin":
         raise RuntimeError(
