@@ -186,14 +186,6 @@ def cents(v: Any) -> float:
     return float(v) / 100.0
 
 
-def load_snapshot_file() -> dict[str, Any]:
-    raw = SNAPSHOT_PATH.read_text(encoding="utf-8")
-    json_part = raw.split("=", 1)[1].strip()
-    if json_part.endswith(";"):
-        json_part = json_part[:-1]
-    return json.loads(json_part)
-
-
 def write_snapshot(snap: dict[str, Any]) -> None:
     text = "window.SNAPSHOT = " + json.dumps(snap, ensure_ascii=False, indent=2) + ";\n"
     SNAPSHOT_PATH.write_text(text, encoding="utf-8")
@@ -361,22 +353,17 @@ def build_snapshot(token: str) -> dict[str, Any]:
 
 
 def refresh() -> dict[str, Any]:
+    """Fetch, write snapshot.js, and return it. Failures become snap["error"]."""
     try:
-        token = read_token()
-        snap = build_snapshot(token)
-        write_snapshot(snap)
-        return snap
+        snap = build_snapshot(read_token())
     except Exception as e:
         snap = empty_snapshot(str(e))
-        write_snapshot(snap)
-        raise
+    write_snapshot(snap)
+    return snap
 
 
 def print_summary(snap: dict[str, Any]) -> None:
-    od = (snap.get("spend") or {}).get("onDemandUsd")
-    if od is None:
-        od = 0
-    print(od)
+    print((snap["spend"] or {}).get("onDemandUsd", 0))
     print(SNAPSHOT_PATH)
 
 
@@ -384,45 +371,25 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
-    def do_GET(self) -> None:
-        if self.path.split("?", 1)[0] == "/refresh":
-            try:
-                snap = refresh()
-                code = 200
-            except Exception:
-                snap = load_snapshot_file()
-                code = 500
-            body = json.dumps(snap, ensure_ascii=False).encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-
-        path = self.path.split("?", 1)[0]
-        if path == "/":
-            path = "/index.html"
-        target = (DIR / path.lstrip("/")).resolve()
-        try:
-            target.relative_to(DIR)
-        except ValueError:
-            self.send_error(404)
-            return
-        if not target.is_file():
-            self.send_error(404)
-            return
-        data = target.read_bytes()
-        ctype = "application/octet-stream"
-        if target.suffix == ".html":
-            ctype = "text/html; charset=utf-8"
-        elif target.suffix == ".js":
-            ctype = "application/javascript; charset=utf-8"
-        self.send_response(200)
+    def send(self, code: int, ctype: str, body: bytes) -> None:
+        self.send_response(code)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if path == "/refresh":
+            snap = refresh()
+            body = json.dumps(snap, ensure_ascii=False).encode("utf-8")
+            self.send(500 if snap["error"] else 200, "application/json; charset=utf-8", body)
+        elif path in ("/", "/index.html"):
+            self.send(200, "text/html; charset=utf-8", (DIR / "index.html").read_bytes())
+        elif path == "/snapshot.js":
+            self.send(200, "application/javascript; charset=utf-8", SNAPSHOT_PATH.read_bytes())
+        else:
+            self.send_error(404)
 
 
 def serve() -> None:
@@ -432,22 +399,11 @@ def serve() -> None:
 
 
 def main() -> int:
-    serve_mode = "--serve" in sys.argv
-    try:
-        snap = refresh()
-        print_summary(snap)
-        if serve_mode:
-            serve()
-        return 0
-    except Exception:
-        try:
-            snap = load_snapshot_file()
-        except Exception:
-            snap = empty_snapshot("refresh failed")
-        print_summary(snap)
-        if serve_mode:
-            serve()
-        return 1
+    snap = refresh()
+    print_summary(snap)
+    if "--serve" in sys.argv:
+        serve()
+    return 1 if snap["error"] else 0
 
 
 if __name__ == "__main__":

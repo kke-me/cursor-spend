@@ -98,15 +98,18 @@ class ServerTest(unittest.TestCase):
 
     def test_serves_dashboard_and_snapshot(self):
         base = self.serve()
+        self.snapshot.write_text("window.SNAPSHOT = {};\n", encoding="utf-8")
         status, ctype, body = self.get(base + "/")
         self.assertEqual((status, ctype), (200, "text/html; charset=utf-8"))
         self.assertIn(b'<script src="snapshot.js">', body)
         status, ctype, body = self.get(base + "/snapshot.js")
         self.assertEqual((status, ctype), (200, "application/javascript; charset=utf-8"))
-        self.assertTrue(body.startswith(b"window.SNAPSHOT = "))
+        self.assertEqual(body, b"window.SNAPSHOT = {};\n")
 
-    def test_unknown_path_is_404(self):
-        self.assertEqual(self.get(self.serve() + "/nope.html")[0], 404)
+    def test_only_dashboard_files_are_served(self):
+        base = self.serve()
+        for path in ("/nope.html", "/refresh.py", "/.git/config", "/fixtures/payload.json"):
+            self.assertEqual(self.get(base + path)[0], 404, path)
 
 
 if __name__ == "__main__":
