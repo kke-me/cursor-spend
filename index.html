@@ -152,6 +152,9 @@
         const text = unknown.map((u) => u.kind + " × " + u.count).join("、");
         nodes.push(h("p", { class: "text-sm text-amber-800" }, ["未分類: " + text]));
       }
+      if (s.truncated) {
+        nodes.push(h("p", { class: "text-sm text-amber-800" }, ["このサイクルの利用を取り切れていません"]));
+      }
       if (!nodes.length) return null;
       if (nodes.length === 1) return nodes[0];
       return h("div", { class: "flex min-w-0 flex-col gap-2" }, nodes);

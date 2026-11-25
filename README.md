@@ -123,15 +123,17 @@ Cursor 3.x 以降、macOS ではトークンが `cursor-safe-storage:v1:` 付き
 | `GET /auth/full_stripe_profile` | チーム ID |
 | `POST .../GetCurrentPeriodUsage` | サイクル・プール使用率・spend |
 | `POST .../GetPlanInfo` | プラン |
-| `POST .../GetFilteredUsageEvents` | 利用イベント（最大 2,000 件） |
+| `POST .../GetFilteredUsageEvents` | 今サイクルの利用イベント（1,000 件 × 最大 20 ページ） |
 
 ### 集計
 
-- サイクル: `billingCycleStart` / `End` でフィルタ
-- Cursor Models: モデル名が API の `autoBucketModels` に含まれるもの。Auto 経由の ` (Auto Balanced)` のような末尾の括弧は外して照合する
-- Other Models: 上記以外。モデル名の一覧はコードに持たないので、新しいモデルが出ても修正は要らない
+- サイクル: `billingCycleStart` / `End` を API に渡し、応答も同じ範囲で落とす
+- Cursor Models: 末尾の括弧書き（` (Auto Balanced)` など）を外して小文字・ハイフンにしてから、プールフィールド、`autoBucketModels` / `default`、最後に `grok-` / `composer-` / `cursor-` / `vega`
+- Other Models: 上記以外
+- `USAGE_EVENT_KIND_ERRORED_NOT_CHARGED` と `USAGE_EVENT_KIND_ABORTED_NOT_CHARGED` は捨てる
 - 知らない `kind` は合計に入れず `unknownKinds` に残す
-- イベント合計とメーターの差が $0.05 以上なら `drift` を出す
+- `individualUsed` があるときだけ、イベント合計との差が $0.05 以上なら `drift` を出す。フィールドが無いときは 0 とみなさない
+- 20,000 件を超えて取り切れていないときは `truncated`
 
 `drift` や未分類が出たら、`fixtures/payload.json` を今のレスポンス形に合わせて直し、テストを通す。
 
