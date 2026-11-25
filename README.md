@@ -70,8 +70,8 @@ Cursor 3.x 以降、macOS ではトークンが `cursor-safe-storage:v1:` 付き
 ### 集計
 
 - サイクル: `billingCycleStart` / `End` でフィルタ
-- Cursor Models: イベントのプールフィールド、なければ `autoBucketModels` / `default`、最後に `grok-` / `composer-` / `cursor-` / `vega`
-- Other Models: 上記以外
+- Cursor Models: モデル名が API の `autoBucketModels` に含まれるもの。Auto 経由の ` (Auto Balanced)` のような末尾の括弧は外して照合する
+- Other Models: 上記以外。モデル名の一覧はコードに持たないので、新しいモデルが出ても修正は要らない
 - 知らない `kind` は合計に入れず `unknownKinds` に残す
 - イベント合計とメーターの差が $0.05 以上なら `drift` を出す
 

@@ -36,14 +36,18 @@ class AggregateTest(unittest.TestCase):
         self.assertNotIn("mystery", models)
         self.assertNotIn("old-model", models)
 
-    def test_pool_source_order(self):
+    def test_pool_comes_from_auto_bucket_models(self):
         pools = {m["model"]: m["pool"] for m in self.snap["models"]}
-        self.assertEqual(pools["composer-1"], "cursor")
-        self.assertEqual(pools["default"], "cursor")
-        self.assertEqual(pools["grok-new"], "cursor")
-        self.assertEqual(pools["kimi"], "other")
-        self.assertEqual(pools["claude"], "cursor")
-        self.assertEqual(self.snap["prefixFallback"], ["grok-new"])
+        self.assertEqual(
+            pools,
+            {
+                "composer-1": "cursor",
+                "default": "cursor",
+                "grok-4.7-high (Auto Balanced)": "cursor",
+                "kimi": "other",
+                "Claude Opus 5.5 (Auto Balanced)": "other",
+            },
+        )
 
 
 if __name__ == "__main__":

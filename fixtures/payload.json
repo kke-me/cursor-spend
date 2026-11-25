@@ -2,7 +2,11 @@
   "usage": {
     "billingCycleStart": "1700000000000",
     "billingCycleEnd": "1702592000000",
-    "autoBucketModels": ["composer-1"],
+    "autoBucketModels": [
+      "default",
+      "composer-1",
+      "grok-4.7-high"
+    ],
     "namedModelSelectedDisplayMessage": "",
     "planUsage": {
       "autoPercentUsed": 10,
@@ -39,7 +43,7 @@
     {
       "timestamp": "1700000002000",
       "kind": "USAGE_EVENT_KIND_INCLUDED_IN_BUSINESS",
-      "model": "grok-new",
+      "model": "grok-4.7-high (Auto Balanced)",
       "chargedCents": 50
     },
     {
@@ -57,8 +61,7 @@
     {
       "timestamp": "1700000005000",
       "kind": "USAGE_EVENT_KIND_USAGE_BASED",
-      "model": "claude",
-      "pool": "auto",
+      "model": "Claude Opus 5.5 (Auto Balanced)",
       "chargedCents": 200
     },
     {

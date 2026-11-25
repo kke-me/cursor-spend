@@ -26,14 +26,13 @@ USAGE = f"{DASH}/GetCurrentPeriodUsage"
 PLAN = f"{DASH}/GetPlanInfo"
 EVENTS = f"{DASH}/GetFilteredUsageEvents"
 
-LOGIC_VERSION = 1
+LOGIC_VERSION = 2
 DRIFT_USD = 0.05
 KIND_ON_DEMAND = "USAGE_EVENT_KIND_USAGE_BASED"
 KIND_INCLUDED = "USAGE_EVENT_KIND_INCLUDED_IN_BUSINESS"
 KNOWN_KINDS = {KIND_ON_DEMAND, KIND_INCLUDED}
-CURSOR_PREFIXES = ("grok-", "composer-", "cursor-", "vega")
-# Present on an event, these win over autoBucketModels and prefixes.
-POOL_FIELDS = ("pool", "modelPool", "billingBucket", "modelBucket")
+# Auto-routed events are named like "grok-4.7-high (Auto Balanced)".
+ROUTING_SUFFIX = re.compile(r" \([^)]*\)$")
 MAX_PAGES = 20
 
 
@@ -53,7 +52,6 @@ def empty_snapshot(error: str | None = None) -> dict[str, Any]:
         "logicVersion": LOGIC_VERSION,
         "drift": None,
         "unknownKinds": [],
-        "prefixFallback": [],
     }
 
 
@@ -201,21 +199,8 @@ def write_snapshot(snap: dict[str, Any]) -> None:
     SNAPSHOT_PATH.write_text(text, encoding="utf-8")
 
 
-def classify_pool(name: str, event: dict[str, Any], auto_bucket: set[str]) -> tuple[str, str]:
-    for key in POOL_FIELDS:
-        raw = event.get(key)
-        if raw in (None, ""):
-            continue
-        text = str(raw).lower()
-        if text in ("cursor", "auto", "first_party", "first-party"):
-            return "cursor", "api"
-        if text in ("other", "api", "third_party", "third-party"):
-            return "other", "api"
-    if name in auto_bucket or name == "default":
-        return "cursor", "bucket"
-    if name.startswith(CURSOR_PREFIXES):
-        return "cursor", "prefix"
-    return "other", "other"
+def classify_pool(name: str, auto_bucket: set[str]) -> str:
+    return "cursor" if ROUTING_SUFFIX.sub("", name) in auto_bucket else "other"
 
 
 def aggregate(
@@ -237,7 +222,6 @@ def aggregate(
     uses: list[dict[str, Any]] = []
     models: dict[str, dict[str, Any]] = {}
     unknown: dict[str, int] = {}
-    prefix_fallback: set[str] = set()
 
     def ensure_model(name: str, pool: str) -> dict[str, Any]:
         if name not in models:
@@ -266,9 +250,7 @@ def aggregate(
             continue
 
         model = str(ev.get("model") or "unknown")
-        pool, source = classify_pool(model, ev, auto_bucket)
-        if source == "prefix":
-            prefix_fallback.add(model)
+        pool = classify_pool(model, auto_bucket)
         row = ensure_model(model, pool)
         row["calls"] += 1
         usd = round(cents(ev.get("chargedCents") or 0), 4)
@@ -341,7 +323,6 @@ def aggregate(
             {"kind": kind, "count": count}
             for kind, count in sorted(unknown.items())
         ],
-        "prefixFallback": sorted(prefix_fallback),
         "onDemand": on_demand,
         "uses": uses,
         "models": model_list,
